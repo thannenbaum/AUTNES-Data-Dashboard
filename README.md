@@ -6,6 +6,8 @@ This is the R code package for executing the dashboard currently provided at htt
 
 Current Wave implemented: #24
 
+Feedback or comments to: philipp.thannen@tuwien.ac.at or pthannen@ethz.ch.
+
 ## Directory Structure
 
 Your project directory should be organized as follows:
