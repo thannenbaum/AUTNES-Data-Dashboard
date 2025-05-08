@@ -1,0 +1,1672 @@
+---
+title: "AUTNES Online Panel Study: Data Dashboard"
+output:
+  flexdashboard::flex_dashboard:
+    vertical_layout: fill
+    theme: bootstrap
+    orientation: rows
+    includes:
+      in_header: data/fa6.html
+      before_body: data/mobile-warning.html
+    navbar:
+      - {icon: "fab fa-bluesky", href: "https://bsky.app/profile/stawi-univie.bsky.social", target: "_blank", align: right}
+      - {title: "Source Code", icon: "fa-github", href: "https://github.com/thannenbaum/AUTNES-Data-Dashboard", target: "_blank", align: "right"}
+      
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+# Load necessary libraries
+library(shiny)
+library(ggplot2)
+library(dplyr)
+library(plotly)
+library(base64enc)
+library(flexdashboard)
+library(RColorBrewer)
+library(networkD3)
+library(readxl)
+
+# -----------------------------------------------------------------------------
+# Configuration - Adapt paths here! Adapt election dates here!
+# -----------------------------------------------------------------------------
+# AUTNES logo file
+path_logo <- "data/AUTNES-Logo(darkred).png"
+version <- "v1.0"
+
+# rds files
+path_percentage <- "data/dat_percentage.rds"
+path_means <- "data/dat_means.rds"
+path_grouped <- "data/dat_grouped.rds"
+path_sankey_nodes <- "data/dat_nodes.rds"
+path_sankey_links <- "data/dat_links.rds"
+
+# question wording
+question_texts <- read_excel("data/mappings_variable_text.xlsx")
+question_texts <- question_texts %>%
+  rename(
+    variable_label = LABEL,
+    question_prompt = PROMPT,
+    question_item = ITEM,
+    question_text = TEXT
+)
+
+# Election dates
+austrian_election_dates <- as.Date(c("2017-10-15", "2019-09-29", "2024-09-29"))
+presidential_election_dates <- as.Date(c("2022-10-09"))
+european_election_dates <- as.Date(c("2019-05-26", "2024-06-09"))
+
+# suppress warnings
+options(warn = -1)
+
+# -----------------------------------------------------------------------------
+# Configuration - Adapt paths here !!
+# -----------------------------------------------------------------------------
+
+# Load data
+dat_percentage <- readRDS(path_percentage)
+dat_means <- readRDS(path_means)
+dat_grouped <- readRDS(path_grouped)
+dat_sankey_nodes <- readRDS(path_sankey_nodes)
+dat_sankey_links <- readRDS(path_sankey_links)
+```
+
+```{r}
+# -----------------------------------------------------------------------------
+# Colors, Style etc. (apart from CSS)
+# -----------------------------------------------------------------------------
+# Define colors for y/n questions, lines and party colors
+yes_no_colors <- c("#377eb8", "#e41a1c")
+line_colors <- c("#377eb8", "#ff7f00", "#4daf4a", "#a65628", "#984ea3", "#999999", "#e41a1c", "#dede00", "#f781bf")
+party_colors <- c(
+  "SPOE" = rgb(255, 0, 0, maxColorValue = 255),
+  "OEVP" = rgb(99, 195, 208, maxColorValue = 255),
+  "FPOE" = rgb(0, 102, 255, maxColorValue = 255),
+  "Gruene" = rgb(146, 208, 80, maxColorValue = 255),
+  "GRUENE" = rgb(146, 208, 80, maxColorValue = 255),
+  "NEOS" = rgb(232, 65, 136, maxColorValue = 255),
+  "andere Partei" = rgb(169, 169, 169, maxColorValue = 255),
+  "keine Partei" = rgb(215, 215, 215, maxColorValue = 255)
+)
+
+# Define colors for sankey diagram
+sankey_colors <- c(
+  "ÖVP" = "rgb(99, 195, 208)",         # Light Blue
+  "SPÖ" = "rgb(255, 0, 0)",            # Red
+  "FPÖ" = "rgb(0, 102, 255)",          # Blue
+  "GRÜNE" = "rgb(146, 208, 80)",       # Green
+  "NEOS" = "rgb(232, 65, 136)",        # Pink
+  "SONSTIGE/UNGÜLTIG" = "rgb(169, 169, 169)", # Grey for invalid/others
+  "NICHTWAHL" = "rgb(169, 169, 169)"   # Dark grey for non-voters
+)
+
+# Set the general margin of plots
+m <- list(l = 0, r = 0, b = 50, t = 30, pad = 4)
+
+# Define the common design of all plots
+get_common_theme <- function() {
+  theme_minimal() +
+    theme(
+      text = element_text(size = 10),
+      axis.title = element_text(size = 11),
+      axis.text = element_text(size = 10.5),
+      legend.title = element_text(size = 11),
+      legend.text = element_text(size = 10),
+      plot.title = element_text(size = 13, face = "bold")
+    )
+}
+```
+
+```{r,context="server"}
+# -----------------------------------------------------------------------------
+# Global data variables and variable lists per tab
+# -----------------------------------------------------------------------------
+
+# Global date range state to sync between tabs
+date_range_global <- reactiveVal(c(min(dat_percentage$median_date), max(dat_percentage$median_date)))
+
+# List to match category names with regex to address variable names for "Verteilung" and "Gruppierte Mittelwerte"
+category_regex <- list(
+  "Vertrauen"                     = "^VERTRAUEN",
+  "Populismus"                    = "^POPULISMUS",
+  "Propensity to Vote"            = "^PTV",
+  "Verbundenheit"                 = "^VERBUNDENHEIT",
+  "NATIONALSTOLZ"                 = "^NATIONALSTOLZ",              # label in caps to match others
+  "Meinung"                       = "^MEINUNG",
+  "Wirtschaftliche Lage"          = "^WIRTSCHAFTSLAGE OESTERREICH|EIGENE WIRTSCHAFTLICHE LAGE",
+  "Sympathie"                     = "^SYMPATHIE",
+  "Parteiidentifikation"          = "^STAERKE PARTEIIDENTIFIKATION|PARTEIIDENTIFIKATION",
+  "Links-Rechts Einstufung"       = "^LINKS-RECHTS",
+  "Einschaetzung der polit. Lage" = "^EINSCHAETZUNG",
+  "Informationen zu polit. Geschehen" = "^INFORMATIONEN",
+  "POLITISCHES INTERESSE"         = "^POLITISCHES INTERESSE",      # label in caps to match others
+  "Im Wahlkampf"                  = "^AUFMERKSAMKEIT|IM WAHLKAMPF",
+  "Koalitionswahrscheinlichkeit"  = "^KOALITIONSWAHRSCHEINLICHKEIT",
+  "Koalitionswunsch"              = "^KOALITIONSWUNSCH"
+)
+
+# List to match category names with regex to address variable names for "Mittelwerte" (certain variables left out using regex)
+category_regex_mittelwert <- list(
+  "Vertrauen"                     = "^VERTRAUEN",
+  "Populismus"                    = "^POPULISMUS",
+  "Propensity to Vote"            = "^PTV",
+  "Verbundenheit"                 = "^VERBUNDENHEIT",
+  "Nationalstolz"                 = "^NATIONALSTOLZ",
+  "Meinung"                       = "^MEINUNG",
+  "Wirtschaftliche Lage"          = "^WIRTSCHAFTSLAGE OESTERREICH|EIGENE WIRTSCHAFTLICHE LAGE",
+  "Sympathie"                     = "^SYMPATHIE",
+  "Parteiidentifikation"          = "^STAERKE PARTEIIDENTIFIKATION",
+  "Links-Rechts Einstufung"       = "^LINKS-RECHTS",
+  "Einschaetzung der polit. Lage" = "^EINSCHAETZUNG",
+  "Informationen zu polit. Geschehen" = "^INFORMATIONEN",
+  "Politisches Interesse"         = "^POLITISCHES INTERESSE",
+  "Im Wahlkampf"                  = "^AUFMERKSAMKEIT",
+  "Koalitionswahrscheinlichkeit"  = "^KOALITIONSWAHRSCHEINLICHKEIT",
+  "Koalitionswunsch"              = "^KOALITIONSWUNSCH"
+)
+
+# Input variables for "Verteilung der Antworten"
+input_variables_verteilung <- lapply(
+  category_regex,
+  function(rx) unique(dat_percentage$variable_label[grep(rx, dat_percentage$variable_label)])
+)
+
+# Input variable categories for "Mittelwerte"
+variable_categories_mittelwert <- c("Vertrauen", "Populismus", "Propensity to Vote", "Verbundenheit", "Nationalstolz", "Meinung", "Wirtschaftliche Lage", "Sympathie", "Parteiidentifikation", "Links-Rechts Einstufung", "Einschaetzung der polit. Lage", "Informationen zu polit. Geschehen", "Politisches Interesse", "Im Wahlkampf", "Koalitionswahrscheinlichkeit", "Koalitionswunsch")
+
+#
+# Function to get all variable of certain category for "Mittelwerte"
+#
+get_available_vars_mittelwert <- function(category, data_vec) {
+  rx <- category_regex_mittelwert[[category]]
+  if (is.null(rx)) return(character(0))
+  unique(data_vec[grep(rx, data_vec)])
+}
+
+# Input variables for "Gruppierte Mittelwerte"
+input_variables_mittelwert_gruppierung <- lapply(
+  category_regex,
+  function(rx) unique(dat_percentage$variable_label[grep(rx, dat_percentage$variable_label)])
+)
+
+# Groups for "Gruppierte Mittelwerte"
+input_groups_mittelwert_gruppierung <- c("Geschlecht", "Alter", "Bildungsgrad")
+```
+
+```{r}
+# -----------------------------------------------------------------------------
+# HTML texts used in the dashboad
+# -----------------------------------------------------------------------------
+# note: mobile-warning is done using an external file (mobile-warning.html)
+
+# Footer note on version
+sidebar_footer_html <- sprintf(
+  '<div>AUTNES Data Dashboard %s<br>%s<br>
+   Lizenz: <a href="https://creativecommons.org/licenses/by/4.0/deed.de">CC BY 4.0</a></div>',
+  version, Sys.Date()
+)
+
+about_data_html <- paste0(
+  '<h5><b>Daten und Zitierung</b></h5>
+   <p>Die in diesem Dashboard pr\u00e4sentierten Statistiken basieren auf Daten der
+      AUTNES Online Panel Study (2017–2024), einer umfassenden mehrwelligen
+      Panelbefragung, die die Einstellungen, Wahrnehmungen und das Wahlverhalten
+      \u00f6sterreichischer W\u00e4hler*innen \u00fcber mehrere Wahlen hinweg untersucht.
+      Pro Panelwelle wurden rund 3.000 wahlberechtigte \u00f6sterreichische
+      B\u00fcrger*innen ab 16 Jahren online befragt. Die dargestellten Statistiken
+      wurden gewichtet berechnet, um ein m\u00f6glichst repr\u00e4sentatives Abbild der
+      Zielpopulation zu sicherstellen.</p>
+
+   <p>Weitere Informationen finden Sie auf der Website des
+      <a href="https://viecer.univie.ac.at/">Vienna Center for Electoral Research</a>.
+      Der vollst\u00e4ndige Fragebogen, Methodenbericht sowie der Datensatz f\u00fcr
+      wissenschaftliche Nutzung sind via
+      <a href="https://aussda.at/">AUSSDA</a> verf\u00fcgbar.</p>
+
+   <h5><b>Zitierempfehlung f\u00fcr das Dashboard</b></h5>
+   <p>von der Thannen, P., Partheym\u00fcller, J., &amp; Kritzinger, S. (2025).
+      <i>AUTNES Online Panel Study: Data Dashboard</i>.
+      <a href="http://131.130.71.40:3838/autnes/">http://131.130.71.40:3838/autnes/</a></p>
+
+   <h5><b>Disclaimer</b></h5>
+   <p>Das AUTNES-Team und die Autor*innen dieses Dashboards \u00fcbernehmen keine
+      Verantwortung f\u00fcr Interpretationen oder Schlussfolgerungen, die aus den
+      hier pr\u00e4sentierten Daten gezogen werden. Dieses Dashboard ist ein Tool zur
+      Exploration von deskriptiven Statistiken und kann eine umfassende
+      Datenanalyse nicht ersetzen.</p>
+
+   <h5><b>Kontakt</b></h5>
+   <p>Haben Sie Fragen oder Anregungen? Kontaktieren Sie uns unter:
+      <a href="mailto:viecer@univie.ac.at">viecer@univie.ac.at</a></p>'
+)
+```
+
+```{r}
+# -----------------------------------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------------------------------
+
+# Configuration table for categories
+category_cfg <- list(
+  # 1 ─ VERTRAUEN ------------------------------------------------------------
+  "^VERTRAUEN" = list(
+    y_levels         = c(
+      "0 = vertraue ich ueberhaupt nicht",
+      1:9,
+      "10 = vertraue ich voll und ganz"
+    ),
+    y_levels_numeric = c(
+      "0 = vertraue ich ueberhaupt nicht" = 0,
+      "1" = 1,
+      "2" = 2,
+      "3" = 3,
+      "4" = 4,
+      "5" = 5,
+      "6" = 6,
+      "7" = 7,
+      "8" = 8,
+      "9" = 9,
+      "10 = vertraue ich voll und ganz"   = 10
+    ),
+    stack_dir = -1,
+    pos       = "stack"
+  ),
+  
+  # 2 ─ POPULISMUS ----------------------------------------------------------
+  "^POPULISMUS" = list(
+    y_levels  = c(
+      "trifft gar nicht zu",
+      "trifft eher nicht zu",
+      "teils-teils",
+      "trifft eher zu",
+      "trifft sehr zu"
+    ),
+    y_levels_numeric = c(
+      "trifft gar nicht zu"      = 1,
+      "trifft eher nicht zu"     = 2,
+      "teils-teils"              = 3,
+      "trifft eher zu"           = 4,
+      "trifft sehr zu"           = 5
+    ),
+    stack_dir =  1,
+    pos       = position_stack(reverse = TRUE)
+  ),
+  
+  # 3 ─ MEINUNG -------------------------------------------------------------
+  "^MEINUNG" = list(
+    y_levels  = c(
+      "trifft gar nicht zu",
+      "trifft eher nicht zu",
+      "teils-teils",
+      "trifft eher zu",
+      "trifft sehr zu"
+    ),
+    y_levels_numeric = c(
+      "trifft gar nicht zu"  = 1,
+      "trifft eher nicht zu" = 2,
+      "teils-teils"          = 3,
+      "trifft eher zu"       = 4,
+      "trifft sehr zu"       = 5
+    ),
+    stack_dir =  1,
+    pos       = position_stack(reverse = TRUE)
+  ),
+  
+  # 4 ─ PTV und Koalitionswahrscheinlichkeit ---------------------------------
+  "^PTV|KOALITIONSWAHRSCHEINLICHKEIT" = list(
+    y_levels  = c("0 = sehr unwahrscheinlich", 1:9, "10 = sehr wahrscheinlich"),
+    y_levels_numeric = c(
+      "0 = sehr unwahrscheinlich" = 0,
+      setNames(1:9, 1:9),
+      "10 = sehr wahrscheinlich"   = 10
+    ),
+    stack_dir = -1,
+    pos       = "stack"
+  ),
+  
+  # 5 ─ NATIONALSTOLZ --------------------------------------------------------
+  "^NATIONALSTOLZ" = list(
+    y_levels  = c(
+      "sehr stolz",
+      "stolz",
+      "teils-teils",
+      "weniger stolz",
+      "ueberhaupt nicht stolz"
+    ),
+    y_levels_numeric = c(
+      "ueberhaupt nicht stolz" = 1,
+      "weniger stolz"          = 2,
+      "teils-teils"            = 3,
+      "stolz"                  = 4,
+      "sehr stolz"             = 5
+    ),
+    stack_dir =  1,
+    pos       = position_stack(reverse = TRUE)
+  ),
+  
+  # 6 ─ VERBUNDENHEIT --------------------------------------------------------
+  "^VERBUNDENHEIT" = list(
+    y_levels  = c(
+      "ueberhaupt nicht stark",
+      "nicht sehr stark",
+      "stark",
+      "sehr stark"
+    ),
+    y_levels_numeric = c(
+      "ueberhaupt nicht stark" = 1,
+      "nicht sehr stark"       = 2,
+      "stark"                  = 3,
+      "sehr stark"             = 4
+    ),
+    stack_dir =  1,
+    pos       = position_stack(reverse = TRUE)
+  ),
+  
+  # 7 ─ POLITISCHES INTERESSE -----------------------------------------------
+  "^POLITISCHES INTERESSE" = list(
+    y_levels  = c(
+      "gar nicht interessiert",
+      "wenig interessiert",
+      "ziemlich interessiert",
+      "sehr interessiert"
+    ),
+    y_levels_numeric = c(
+      "gar nicht interessiert" = 1,
+      "wenig interessiert"     = 2,
+      "ziemlich interessiert"  = 3,
+      "sehr interessiert"      = 4
+    ),
+    stack_dir =  1,
+    pos       = position_stack(reverse = TRUE)
+  ),
+  
+  # 8 ─ PARTEIIDENTIFIKATION -----------------------------------------------
+  "^PARTEIIDENTIFIKATION" = list(
+    y_levels  = c("Nein", "Ja"),
+    y_levels_numeric = c("Nein" = 0, "Ja" = 1),
+    stack_dir =  1,
+    pos       = "stack"
+  ),
+  
+  # 9 ─ STAERKE PARTEIIDENTIFIKATION ----------------------------------------
+  "^STAERKE PARTEIIDENTIFIKATION" = list(
+    y_levels  = c("nicht sehr nahe", "ziemlich nahe", "sehr nahe"),
+    y_levels_numeric = c(
+      "nicht sehr nahe" = 1,
+      "ziemlich nahe"   = 2,
+      "sehr nahe"       = 3
+    ),
+    stack_dir =  1,
+    pos       = position_stack(reverse = TRUE)
+  ),
+  
+  # 10 ─ LINKS-RECHTS --------------------------------------------------------
+  "^LINKS-RECHTS" = list(
+    y_levels  = c("0 = links", 1:9, "10 = rechts"),
+    y_levels_numeric = c(
+      "0 = links" = 0,
+      setNames(1:9, 1:9),
+      "10 = rechts" = 10
+    ),
+    stack_dir = -1,
+    pos       = "stack"
+  ),
+  
+  # 11 ─ POLITISCHE LAGE -----------------------------------------------------
+  "^EINSCHAETZUNG" = list(
+    y_levels  = c("0 = ueberhaupt nicht", 1:9, "10 = sehr"),
+    y_levels_numeric = c(
+      "0 = ueberhaupt nicht" = 0,
+      setNames(1:9, 1:9),
+      "10 = sehr"            = 10
+    ),
+    stack_dir = -1,
+    pos       = "stack"
+  ),
+  
+  # 12 ─ INFORMATIONEN -------------------------------------------------------
+  "^INFORMATIONEN" = list(
+    y_levels  = c(
+      "nie",
+      "seltener",
+      "mehrmals pro Monat",
+      "mehrmals pro Woche",
+      "nahezu taeglich",
+      "mehrmals taeglich"
+    ),
+    y_levels_numeric = c(
+      "nie"                = 1,
+      "seltener"           = 2,
+      "mehrmals pro Monat" = 3,
+      "mehrmals pro Woche" = 4,
+      "nahezu taeglich"    = 5,
+      "mehrmals taeglich"  = 6
+    ),
+    stack_dir =  1,
+    pos       = position_stack(reverse = TRUE)
+  ),
+  
+  # 13 ─ IM WAHLKAMPF -------------------------------------------------------
+  "^IM WAHLKAMPF" = list(
+    y_levels  = c("Nein", "Ja"),
+    y_levels_numeric = c("Nein" = 0, "Ja" = 1),
+    stack_dir =  1,
+    pos       = "stack"
+  ),
+  
+  # 14 ─ AUFMERKSAMKEIT ------------------------------------------------------
+  "^AUFMERKSAMKEIT" = list(
+    y_levels  = c(
+      "gar nicht aufmerksam",
+      "wenig aufmerksam",
+      "ziemlich aufmerksam",
+      "sehr aufmerksam"
+    ),
+    y_levels_numeric = c(
+      "gar nicht aufmerksam" = 1,
+      "wenig aufmerksam"     = 2,
+      "ziemlich aufmerksam"  = 3,
+      "sehr aufmerksam"      = 4
+    ),
+    stack_dir =  1,
+    pos       = position_stack(reverse = TRUE)
+  ),
+  
+  # 15 ─ KOALITIONSWUNSCH ----------------------------------------------------
+  "^KOALITIONSWUNSCH" = list(
+    y_levels  = c(
+      "0 = wuensche ich mir ueberhaupt nicht",
+      1:9,
+      "10 = wuensche ich mir sehr"
+    ),
+    y_levels_numeric = c(
+      "0 = wuensche ich mir ueberhaupt nicht" = 0,
+      setNames(1:9, 1:9),
+      "10 = wuensche ich mir sehr"            = 10
+    ),
+    stack_dir = -1,
+    pos       = "stack"
+  ),
+  
+  # 16 ─ WIRTSCHAFTSLAGE Ö / Eigene -----------------------------------------
+  "^WIRTSCHAFTSLAGE OESTERREICH|EIGENE WIRTSCHAFTLICHE" = list(
+    y_levels  = c(
+      "viel schlechter",
+      "etwas schlechter",
+      "gleich geblieben",
+      "etwas besser",
+      "viel besser"
+    ),
+    y_levels_numeric = c(
+      "viel schlechter"   = 1,
+      "etwas schlechter"  = 2,
+      "gleich geblieben"  = 3,
+      "etwas besser"      = 4,
+      "viel besser"       = 5
+    ),
+    stack_dir =  1,
+    pos       = position_stack(reverse = TRUE)
+  ),
+  
+  # 17 ─ SYMPATHIE -----------------------------------------------------------
+  "^SYMPATHIE" = list(
+    y_levels  = c("0 = gar nicht sympathisch", 1:9, "10 = sehr sympathisch"),
+    y_levels_numeric = c(
+      "0 = gar nicht sympathisch" = 0,
+      setNames(1:9, 1:9),
+      "10 = sehr sympathisch"     = 10
+    ),
+    stack_dir =  1,
+    pos       = "stack"
+  )
+)
+
+#
+# Function to calculate date breaks based on date range
+#
+calculate_date_breaks <- function(first_date_displayed, last_date_displayed) {
+  # Calculate the total number of days between the first and last dates
+  total_days <- as.numeric(difftime(last_date_displayed, first_date_displayed, units = "days"))
+  
+  # Determine the number of breaks based on the total_days
+  if (total_days <= 183) {  # Up to 6 months
+    num_breaks <- 2
+  } else if (total_days <= 366) {  # Up to 1 year
+      num_breaks <- 6
+  } else if (total_days <= 730) {  # Up to 2 years
+      num_breaks <- 8
+  } else {
+      num_breaks <- 10
+  }
+  
+  # Generate the sequence of breaks
+  breaks <- seq.Date(
+    from = first_date_displayed,
+    to = last_date_displayed,
+    length.out = num_breaks
+  )
+  
+  # Ensure that the first and last dates are included
+  breaks <- unique(c(first_date_displayed, breaks, last_date_displayed))
+  
+  # Sort the breaks
+  breaks <- sort(breaks)
+  
+  return(breaks)
+}
+
+#
+# Function to create the election annotations
+#
+add_election_annotations <- function(plot, y_min, y_max, input_prefix, start_date, end_date) {
+  election_types <- c("austrian", "presidential", "european")
+  labels <- c("NR-Wahl", "BP-Wahl", "EP-Wahl")
+  date_lists <- list(austrian_election_dates, presidential_election_dates, european_election_dates)
+  
+  for (i in seq_along(election_types)) {
+    election_type <- election_types[i]
+    label <- labels[i]
+    dates <- date_lists[[i]]
+    
+    show_input <- input[[paste0("show_", election_type, "_elections_", input_prefix)]]
+    if (isTRUE(show_input)) {
+      # Filter dates within the displayed range
+      filtered_dates <- dates[dates >= start_date & dates <= end_date]
+      
+      for (date in filtered_dates) {
+        plot <- plot %>% 
+          add_segments(
+            x = date, xend = date,
+            y = y_min, yend = y_max,
+            line = list(color = "black", opacity = 0.7, dash = "dot"),
+            inherit = FALSE,
+            showlegend = FALSE,
+            hoverinfo = "none"
+        ) %>% 
+          add_annotations(
+            x = date,
+            y = y_min,
+            text = label,
+            xref = "x",
+            yref = "y",
+            showarrow = FALSE,
+            font = list(color = "black", size = 12),
+            xanchor = "center",
+            yanchor = "top",
+            hoverinfo = "none"
+        )
+      }
+    }
+  }
+  return(plot)
+}
+
+#
+# Function to return the first rule whose regex matches 'var_label'
+#
+match_cfg <- function(var_label) {
+  hit <- names(category_cfg)[vapply(names(category_cfg),
+                                    function(rx) grepl(rx, var_label),
+                                    logical(1))]
+  if (length(hit)) category_cfg[[hit[1]]] else NULL
+}
+
+#
+# Function to get y-axis labels based on the selected variable
+#
+get_y_axis_labels <- function(var_labels) {
+  cfg <- match_cfg(var_labels[1])
+  
+  if (is.null(cfg)) return(NULL) # (should not happen, when category_cfg complete)
+  
+  cfg$y_levels_numeric
+}
+
+#
+# Function to get levels, direction and label order according to variable
+#
+get_category_config <- function(data, var_label) {
+  cfg <- match_cfg(var_label)
+
+  # default
+  out <- list(direction_value =  1,
+              position_setting = position_stack(reverse = TRUE),
+              data             = data)
+
+  # in case of no match (should not happen, when category_cfg complete)
+  if (!is.null(cfg)) {
+    out$data$Kategorie     <- factor(data$Kategorie, levels = cfg$y_levels)
+    out$direction_value    <- cfg$stack_dir
+    out$position_setting   <- cfg$pos
+  }
+  out
+}
+```
+
+
+
+Verteilung der Antworten {data-icon="fa-area-chart"}
+=======================================================================
+
+{.sidebar data-width=350}
+-----------------------------------------------------------------------
+
+```{r}
+# Sidebar content for variable selection, date range, checkboxes
+div(class = "sidebar-content",
+    div(class = "sidebar-main",
+      selectInput("variable", "Wählen Sie eine Variable:", 
+                  choices = input_variables_verteilung),
+      sliderInput("dateRange_p1", "Datumsbereich auswählen:", 
+                  min = min(dat_percentage$median_date), 
+                  max = max(dat_percentage$median_date), 
+                  value = c(min(dat_percentage$median_date), max(dat_percentage$median_date)),
+                  timeFormat = "%Y-%m"),
+      
+      checkboxInput("show_austrian_elections_p1", "Nationalratswahl-Termine anzeigen", value = FALSE),
+      checkboxInput("show_presidential_elections_p1", "Bundespräsidentschaftswahl-Termine anzeigen", value = FALSE),
+      checkboxInput("show_european_elections_p1", "Europawahl-Termine anzeigen", value = FALSE),
+      
+      checkboxInput(inputId = 'opacity_disabled', label = "Transparente Darstellung deaktivieren", value = FALSE),
+      checkboxInput(inputId = 'colordirect', label = "Farbschema umkehren", value = FALSE)
+    ),
+
+  div(class = "sidebar-footer",
+    HTML(sidebar_footer_html)
+  )
+)
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Anteile der Antwortkategorien in % aller gültigen Antworten nach Befragungswelle {data-height=1350}
+
+```{r,context="server"}
+# Reactive expression to filter the data based on selected variable and date range
+filtered_data_verteilung <- reactive({
+  dat_percentage %>%
+    filter(variable_label == input$variable, 
+           median_date >= input$dateRange_p1[1], 
+           median_date <= input$dateRange_p1[2]) %>%
+    rename(Datum = median_date, Anteil = weighted_percentage, Kategorie = category, N = count_wave_variable) %>%
+    mutate(Anteil = round(Anteil, 3))
+})
+
+# Update global when one slider changes
+observeEvent(input$dateRange_p1, {
+  date_range_global(input$dateRange_p1)
+})
+
+observe({
+  updateSliderInput(session, "dateRange_p1", value = date_range_global())
+})
+
+# Reactive expression to get the question text for the selected variable
+output$frageformulierung_text_p1 <- renderUI({
+  req(input$variable)
+  
+  question_info <- question_texts %>%
+    filter(variable_label == gsub("\\s+", " ", trimws(gsub("[\r\n]", " ", input$variable)))) %>%
+    distinct(variable_label, question_prompt, question_item)
+  
+  if (nrow(question_info) == 0 || is.na(question_info$question_prompt[1])) {
+    return(HTML("<h5><b>Frageformulierung</b></h5><p>Keine Frageformulierung gefunden.</p>"))
+  }
+  
+  prompt <- question_info$question_prompt[1]
+  item <- question_info$question_item
+
+  if (is.na(item)) {
+    HTML(paste0(
+      "<h5><b>Frageformulierung</b></h5>",
+      "<p>", prompt, "</p>"
+    ))
+  } else {
+    HTML(paste0(
+      "<h5><b>Frageformulierung</b></h5>",
+      "<p>", prompt, "</p>",
+      "<ul>", paste0("<li>", item, "</li>", collapse = ""), "</ul>"
+    ))
+  }
+})
+
+# Render the plot using Plotly
+output$plot_verteilung <- renderPlotly({
+  plot_data_verteilung <- filtered_data_verteilung()
+  
+  # Validate that the data is not empty
+  validate(
+    need(nrow(plot_data_verteilung) > 1, "Zu wenige Datenpunkte im ausgewählten Datumsbereich.")
+  )
+  
+  N_sum <- round(mean(plot_data_verteilung$N, na.rm = TRUE), 0)
+  num_categories <- length(unique(plot_data_verteilung$Kategorie))
+  
+  # Get labels, category, direction and position matching to input variable
+  cat_info <- get_category_config(plot_data_verteilung, input$variable)
+  plot_data_verteilung <- cat_info$data
+  direction_value      <- cat_info$direction_value
+  position_setting     <- cat_info$position_setting
+  
+  # Conditionally adjust colors to match parties
+  if (grepl("^KOMPETENTESTE|PARTEIIDENTIFIKATION MIT", input$variable)) {
+    fill_scale <- scale_fill_manual(values = party_colors)
+  } else if (grepl("PARTEIIDENTIFIKATION (VORHANDEN|TENDENZ)|IM WAHLKAMPF", input$variable)) {
+    fill_scale <- scale_fill_manual(values = yes_no_colors)
+  } else {
+    fill_scale <- scale_fill_brewer(palette = "RdYlBu", 
+                                    direction = ((as.numeric(input$colordirect) * 2) - 1) * direction_value)
+  }
+  
+  # Handle conditional opacity
+  if(input$opacity_disabled) {
+    area_layer <- geom_area(position = position_setting, stat = "identity", colour = "white")
+  } else {
+    area_layer <- geom_area(position = position_setting, stat = "identity", colour = "white", alpha = .75)
+  }
+  
+  # Calculate date breaks
+  first_date_displayed <- min(plot_data_verteilung$Datum)
+  last_date_displayed <- max(plot_data_verteilung$Datum)
+  date_breaks <- calculate_date_breaks(first_date_displayed, last_date_displayed)
+
+  # Create the plot
+  p <- ggplot(plot_data_verteilung, aes(x = Datum, y = Anteil, fill = Kategorie)) + 
+    area_layer + 
+    geom_point(aes(text = paste("N (Welle): ", N)), position = position_setting, colour = "white") +
+    fill_scale +
+    labs(x = "", y = "", fill = "") +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+    scale_x_date(breaks = date_breaks, date_labels = "%b %y", 
+                 limits = c(first_date_displayed, last_date_displayed)) + 
+    get_common_theme()
+
+  # Customize the plot with Plotly
+  g <- ggplotly(p, tooltip = c("x", "y", "fill", "text"))
+  
+  # Define y-axis limits
+  y_min <- 0
+  y_max <- 1  # Since percentages range from 0 to 1
+  
+  # Add election annotations
+  g <- add_election_annotations(g, y_min, y_max, "p1", first_date_displayed, last_date_displayed)
+  
+  # Update the layout with existing annotations
+  g <- g %>%
+    layout(
+      legend = list(orientation = "h", x = -0.1, y = -0.1),
+      images = list(list(
+        source = base64enc::dataURI(file = path_logo),
+        xref = "paper", yref = "paper",
+        x = 0.95, y = 0.955, sizex = 0.1, sizey = 0.1,
+        xanchor = "right", yanchor = "bottom"
+      )),
+      margin = m,
+      annotations = list(
+        list(
+          x = 1, y = -0.07, text = paste("N ~", N_sum, "pro Welle"),
+          showarrow = FALSE, xref = 'paper', yref = 'paper',
+          xanchor = 'right', yanchor = 'top',
+          font = list(size = 12, color = "#707070")
+        ),
+        list(
+          x = 1, y = -0.1, text = "Daten: AUTNES",
+          showarrow = FALSE, xref = 'paper', yref = 'paper',
+          xanchor = 'right', yanchor = 'top',
+          font = list(size = 12, color = "#707070")
+        )
+      )
+    ) %>%
+    config(
+      displayModeBar = TRUE,
+      modeBarButtons = list(
+        list("toImage")
+      ),
+      displaylogo = FALSE,
+      toImageButtonOptions = list(
+        format = "png", width = 1500, height = 800, scale = 4
+      )
+    )
+})
+
+# Plotly output
+plotlyOutput("plot_verteilung")
+```
+
+Row {.tabset}
+-----------------------------------------------------------------------
+
+### Über die Daten
+
+```{r}
+div(class = "description-area",
+  HTML(about_data_html)
+)
+```
+
+### Frageformulierung
+
+```{r}
+div(class = "question-area",
+  uiOutput("frageformulierung_text_p1")
+)
+```
+
+
+
+Mittelwerte {data-icon="fa-line-chart"}
+=======================================================================
+
+{.sidebar data-width=350}
+-----------------------------------------------------------------------
+
+```{r}
+# Sidebar content for variable selection, date range, checkboxes
+div(class = "sidebar-content",
+  div(class = "sidebar-main",
+    selectInput("variable_category", "Wählen Sie eine Kategorie:", 
+                choices = variable_categories_mittelwert),
+    uiOutput("variable_mittelwert_selector"),
+    sliderInput("dateRange_p2", "Datumsbereich auswählen:", 
+                min = min(dat_percentage$median_date), 
+                max = max(dat_percentage$median_date), 
+                value = c(min(dat_percentage$median_date), max(dat_percentage$median_date)),
+                timeFormat = "%Y-%m"),
+    
+    checkboxInput("show_austrian_elections_p2", "Nationalratswahl-Termine anzeigen", value = FALSE),
+    checkboxInput("show_presidential_elections_p2", "Bundespräsidentschaftswahl-Termine anzeigen", value = FALSE),
+    checkboxInput("show_european_elections_p2", "Europawahl-Termine anzeigen", value = FALSE),
+    
+    checkboxInput(inputId = 'confidence_p2', label = "95% Konfidenzintervalle", value = FALSE)
+  ),
+  
+  div(class = "sidebar-footer",
+    HTML(sidebar_footer_html)
+  )
+)
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Mittelwerte nach Befragungswelle {data-height=1250}
+
+```{r,context="server"}
+# Create a reactive that filters the available variables based on the selected category only
+observeEvent(input$variable_category, {
+  available_variables <- get_available_vars_mittelwert(input$variable_category, dat_percentage$variable_label)
+  
+  # Update the checkbox group input
+  updateCheckboxGroupInput(session, "variable_mittelwert", 
+                           choices = available_variables, 
+                           selected = available_variables[1])
+})
+
+# Render the UI for selecting variables (based on category selection)
+output$variable_mittelwert_selector <- renderUI({
+  checkboxGroupInput(
+    inputId = "variable_mittelwert",
+    label = "Wählen Sie eine oder mehrere Variablen:",
+    choices = NULL,
+    selected = NULL
+  )
+})
+
+# Observe the selection and limit it to a maximum of 8
+observeEvent(input$variable_mittelwert, {
+  if (length(input$variable_mittelwert) > 8) {
+    updateCheckboxGroupInput(session, "variable_mittelwert", selected = input$variable_mittelwert[1:8])
+    # Display a notification
+    showNotification("Maximal 8 Variablen auswählbar.", type = "warning")
+  }
+})
+
+# Update global when one slider changes
+observeEvent(input$dateRange_p2, {
+  date_range_global(input$dateRange_p2)
+})
+
+observe({
+  updateSliderInput(session, "dateRange_p2", value = date_range_global())
+})
+
+# Reactive expression to filter data based on selected variable and date range
+filtered_data_mittelwert <- reactive({
+  req(input$variable_mittelwert)
+  
+  dat_means %>%
+    filter(variable_label %in% input$variable_mittelwert,  # Allow multiple selections
+           median_date >= input$dateRange_p2[1], 
+           median_date <= input$dateRange_p2[2]) %>%
+    rename(Datum = median_date, Mittelwert = average_category, N = count_wave_variable) %>%
+    mutate(label_clean = gsub("\\s+", " ", gsub("\n", " ", as.character(variable_label)))) %>%
+    arrange(label_clean)
+})
+
+# Reactive expression to get the question text for the selected variable
+output$frageformulierung_text_p2 <- renderUI({
+  req(input$variable_mittelwert)
+
+  # Clean and sort variable labels (this matches plot legend order)
+  selected_clean <- sort(gsub("\\s+", " ", trimws(gsub("[\r\n]", " ", input$variable_mittelwert))))
+
+  # Filter and prepare question data
+  question_info <- question_texts %>%
+    filter(variable_label %in% selected_clean) %>%
+    distinct(variable_label, question_prompt, question_item)
+
+  # Ensure the same order as in the plot (i.e., sorted to ensure same order in plot and list)
+  question_info <- question_info %>%
+    mutate(variable_label = factor(variable_label, levels = selected_clean)) %>%
+    arrange(variable_label)
+
+  if (nrow(question_info) == 0) {
+    return(HTML("<h5><b>Frageformulierung</b></h5><p>Bitte mindestens eine Variable auswählen.</p>"))
+  }
+
+  shared_prompt <- question_info$question_prompt[1]
+  items_raw <- question_info$question_item
+  items_clean <- items_raw[!is.na(items_raw)]
+  
+  if (length(items_clean) == 0) {
+    HTML(paste0(
+      "<h5><b>Frageformulierung</b></h5>",
+      "<p>", shared_prompt, "</p>"
+    ))
+  }
+  else {
+    items_html <- paste0("<li>", items_clean, "</li>", collapse = "")
+    HTML(paste0(
+      "<h5><b>Frageformulierung</b></h5>",
+      "<p>", shared_prompt, "</p>",
+      "<ul>", items_html, "</ul>"
+    ))
+  }
+})
+
+# Render the plot using Plotly
+output$plot_mittelwert <- renderPlotly({
+  plot_data_mittelwert <- filtered_data_mittelwert()
+  plot_data_mittelwert$variable_label <- factor(
+    plot_data_mittelwert$variable_label,
+    levels = unique(plot_data_mittelwert$variable_label[order(plot_data_mittelwert$label_clean)])
+  )
+  
+  # Validate that the data is not empty
+  validate(
+    need(nrow(plot_data_mittelwert) > 0, "Zu wenige Datenpunkte im ausgewählten Datumsbereich.")
+  )
+
+  # Compute the average N per wave for display
+  N_sum <- plot_data_mittelwert %>%
+    group_by(Datum) %>%
+    summarise(N_wave = sum(N, na.rm = TRUE) / n_distinct(variable_label)) %>%
+    summarise(N_sum = round(mean(N_wave, na.rm = TRUE), 0)) %>%
+    pull(N_sum)
+  
+  # Calculate the half-width of the confidence intervals
+  plot_data_mittelwert <- plot_data_mittelwert %>%
+    mutate(half_ci = (upper_ci - lower_ci) / 2)
+  
+  # Get the y-axis labels for the selected variable
+  y_labels <- get_y_axis_labels(input$variable_mittelwert)
+  
+  # Calculate date breaks
+  first_date_displayed <- min(plot_data_mittelwert$Datum)
+  last_date_displayed <- max(plot_data_mittelwert$Datum)
+  date_breaks <- calculate_date_breaks(first_date_displayed, last_date_displayed)
+  
+  # Create the plot
+  p <- ggplot(plot_data_mittelwert, aes(x = Datum, y = Mittelwert, color = factor(variable_label))) +  
+    geom_line(aes(group = variable_label), linewidth = 0.75) +  
+    geom_point(aes(text = paste0("Mittelwert: ", round(Mittelwert, 2), 
+                                 " ± ", round(half_ci, 2), 
+                                 "<br>N (Welle): ", N)), size = 1.5) +  
+    labs(x = "", y = "", color = "Variable") +
+    scale_x_date(breaks = date_breaks, date_labels = "%b %y", 
+                 limits = c(first_date_displayed, last_date_displayed)) +
+    scale_y_continuous(limits = range(as.numeric(y_labels)), 
+                       breaks = as.numeric(y_labels), 
+                       labels = names(y_labels)) +
+    get_common_theme()
+  
+  # add coloring (conditionally for parties)
+  if (all(grepl("^PTV", input$variable_mittelwert))) {
+    party_keys <- trimws(gsub("^PTV:\\s*", "", input$variable_mittelwert))
+    color_mapping <- setNames(party_colors[party_keys], input$variable_mittelwert)
+    p <- p + scale_color_manual(values = color_mapping)
+  } else {
+    # Fallback default for non-PTV variables
+    p <- p + scale_color_manual(values = line_colors)
+  }
+  
+  # Conditionally add 95% confidence intervals
+  if (input$confidence_p2) {
+    p <- p + geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), 
+          width = 0.03 * as.numeric(difftime(last_date_displayed, first_date_displayed, units = "days")))
+  }
+
+  # Customize the plot with Plotly
+  g <- ggplotly(p, tooltip = c("x", "text"))
+  
+  # Define y-axis limits
+  y_min <- min(as.numeric(y_labels))
+  y_max <- max(as.numeric(y_labels))
+  
+  # Add election annotations
+  g <- add_election_annotations(g, y_min, y_max, "p2", first_date_displayed, last_date_displayed)
+
+  g <- g %>%
+  layout(
+    legend = list(orientation = "h", x = 0, y = -0.1),
+    images = list(list(
+      source = base64enc::dataURI(file = path_logo),
+      xref = "paper", yref = "paper",
+      x = 0.95, y = 0.955, sizex = 0.1, sizey = 0.1,
+      xanchor = "right", yanchor = "bottom"
+    )),
+    margin = m,
+    annotations = list(
+      # Existing annotations
+        list(
+          x = 1, y = -0.07, text = paste("N ~", N_sum, "pro Welle, Daten: AUTNES"),
+          showarrow = FALSE, xref = 'paper', yref = 'paper',
+          xanchor = 'right', yanchor = 'top',
+          font = list(size = 12, color = "#707070")
+        )
+      )
+  ) %>%
+  config(
+      displayModeBar = TRUE,
+      modeBarButtons = list(
+        list("toImage")
+      ),
+      displaylogo = FALSE,
+      toImageButtonOptions = list(
+        format = "png", width = 1500, height = 800, scale = 4
+      )
+    ) %>%
+    htmlwidgets::onRender("
+      function(el, x) {
+        // Track whether we are in a 'highlight' or 'reset' state
+        let highlightMode = false;
+
+        el.on('plotly_legenddoubleclick', function(event) {
+          if (!highlightMode) {
+            // Gray out all traces except the selected one
+            Plotly.restyle(el, 'opacity', 0.2);
+            Plotly.restyle(el, 'opacity', 1, [event.curveNumber]);
+            highlightMode = true; // Enter highlight mode
+          } else {
+            // Reset all traces to full opacity
+            Plotly.restyle(el, 'opacity', 1);
+            highlightMode = false; // Exit highlight mode
+          }
+          return false;  // prevent default double-click behavior
+        });
+
+        el.on('plotly_legendclick', function(event) {
+          if (highlightMode) {
+            // Reset all traces to full opacity on a single click if in highlight mode
+            Plotly.restyle(el, 'opacity', 1);
+            highlightMode = false; // Exit highlight mode
+            return false; // prevent default single-click behavior
+          }
+        });
+      }
+    ")
+})
+
+# Plotly output
+plotlyOutput("plot_mittelwert")
+```
+
+Row {.tabset}
+-----------------------------------------------------------------------
+
+### Über die Daten
+
+```{r}
+div(class = "description-area",
+  HTML(about_data_html)
+)
+```
+
+### Frageformulierung
+
+```{r}
+div(class = "question-area",
+  uiOutput("frageformulierung_text_p2")
+)
+```
+
+
+Gruppierte Mittelwerte {data-icon="fa-users"}
+=======================================================================
+
+{.sidebar data-width=350}
+-----------------------------------------------------------------------
+
+
+```{r}
+div(class = "sidebar-content",
+    div(class = "sidebar-main",
+      selectInput("variable_gruppierter_mittelwert", "Wählen Sie eine Variable:", 
+       choices = input_variables_mittelwert_gruppierung
+       ),
+      selectInput("variable_mittelwert_gruppierung", "Gruppieren nach:", 
+                  choices = input_groups_mittelwert_gruppierung, selected = input_groups_mittelwert_gruppierung[1]),
+      sliderInput("dateRange_p3", "Datumsbereich auswählen:", 
+                  min = min(dat_percentage$median_date), 
+                  max = max(dat_percentage$median_date), 
+                  value = c(min(dat_percentage$median_date), max(dat_percentage$median_date)),
+                  timeFormat = "%Y-%m"),
+      
+      checkboxInput("show_austrian_elections_p3", "Nationalratswahl-Termine anzeigen", value = FALSE),
+      checkboxInput("show_presidential_elections_p3", "Bundespräsidentschaftswahl-Termine anzeigen", value = FALSE),
+      checkboxInput("show_european_elections_p3", "Europawahl-Termine anzeigen", value = FALSE),
+      
+      checkboxInput(inputId = 'confidence_p3', label = "95% Konfidenzintervalle", value = FALSE)
+  ),
+  
+  div(class = "sidebar-footer",
+      HTML(sidebar_footer_html)
+  )
+)
+```
+
+
+Row
+-----------------------------------------------------------------------
+
+### Mittelwerte nach Befragungswelle und Subgruppe {data-height=1250}
+
+```{r,context="server"}
+# Weighted mean calculation
+weighted_mean <- function(x, w) {
+  sum(x * w, na.rm = TRUE) / sum(w, na.rm = TRUE)
+}
+
+weighted_sd <- function(x, w) {
+  mean_w <- weighted_mean(x, w) # weighted mean
+  eff_n <- sum(w, na.rm = TRUE) # effective sample size
+  variance_w <- sum(w * (x - mean_w)^2, na.rm = TRUE) / eff_n # weighted variance
+  sqrt(variance_w) # sd
+}
+
+# Reactive expression to filter and group data based on the selected variable and date range
+filtered_data_mittelwert_grouped <- reactive({
+  dat_grouped %>%
+    rename(Alter = age_group, Geschlecht = gender, Bildungsgrad = education_group) %>%
+    filter(!is.na(!!sym(input$variable_mittelwert_gruppierung)), # filter out rows with NA for grouping
+           variable_label == input$variable_gruppierter_mittelwert,
+           median_date >= input$dateRange_p3[1],
+           median_date <= input$dateRange_p3[2]) %>%
+    group_by_at(vars(median_date, !!sym(input$variable_mittelwert_gruppierung))) %>%
+    summarize(
+      count = n(),
+      weighted_sum = sum(weightd, na.rm = TRUE),
+      Mittelwert = weighted_mean(category_numeric, weightd),  
+      # Calculate weighted standard error
+      std_dev = weighted_sd(category_numeric, weightd),  
+      se = std_dev / sqrt(weighted_sum),  
+      lower_ci = Mittelwert - 1.96 * se,  
+      upper_ci = Mittelwert + 1.96 * se, 
+      .groups = "drop"
+    ) %>%
+    rename(Datum = median_date, N = count)
+})
+
+# Reactive expression to get the question text for the selected variable
+output$frageformulierung_text_p3 <- renderUI({
+  req(input$variable_gruppierter_mittelwert)
+  
+  question_info <- question_texts %>%
+    filter(variable_label == gsub("\\s+", " ", trimws(gsub("[\r\n]", " ", input$variable_gruppierter_mittelwert)))) %>%
+    distinct(variable_label, question_prompt, question_item)
+  
+  if (nrow(question_info) == 0 || is.na(question_info$question_prompt[1])) {
+    return(HTML("<h5><b>Frageformulierung</b></h5><p>Keine Frageformulierung gefunden.</p>"))
+  }
+  
+  prompt <- question_info$question_prompt[1]
+  item <- question_info$question_item
+
+  if (is.na(item)) {
+    HTML(paste0(
+      "<h5><b>Frageformulierung</b></h5>",
+      "<p>", prompt, "</p>",
+      "<p>Ergebnisse sind gruppiert nach ", input$variable_mittelwert_gruppierung, ".</p>"
+    ))
+  } else {
+      HTML(paste0(
+        "<h5><b>Frageformulierung</b></h5>",
+        "<p>", prompt, "</p>",
+        "<ul>", paste0("<li>", item, "</li>", collapse = ""), "</ul>",
+        "<p>Ergebnisse sind gruppiert nach ", input$variable_mittelwert_gruppierung, ".</p>"
+      ))
+  }
+})
+
+# Update global when one slider changes
+observeEvent(input$dateRange_p3, {
+  date_range_global(input$dateRange_p3)
+})
+
+observe({
+  updateSliderInput(session, "dateRange_p3", value = date_range_global())
+})
+
+# Render the plot using Plotly
+output$plot_mittelwert_grouped <- renderPlotly({
+  plot_data_mittelwert <- filtered_data_mittelwert_grouped()
+  
+  # Validate that the data is not empty
+  validate(
+    need(nrow(plot_data_mittelwert) > 0, "Zu wenige Datenpunkte im ausgewählten Datumsbereich.")
+  )
+
+  total_N_per_wave <- plot_data_mittelwert %>%
+    group_by_at(vars(Datum, !!sym(input$variable_mittelwert_gruppierung))) %>%
+    summarize(N_wave = sum(N, na.rm = TRUE))
+  
+  # Compute the average N per wave for display
+  N_sum <- round(mean(total_N_per_wave$N_wave, na.rm = TRUE), 0)
+  
+  # Calculate the half-width of the confidence intervals
+  plot_data_mittelwert <- plot_data_mittelwert %>%
+    mutate(half_ci = (upper_ci - lower_ci) / 2)
+  
+  # Get the y-axis labels for the selected variable
+  y_labels <- get_y_axis_labels(input$variable_gruppierter_mittelwert)
+  
+  # Conditionally set the order for the selected grouping characteristic
+  if (input$variable_mittelwert_gruppierung == "Geschlecht") {
+    plot_data_mittelwert$Geschlecht <- factor(
+      plot_data_mittelwert$Geschlecht,
+      levels = c("Frau", "Mann")
+    )
+  } else if (input$variable_mittelwert_gruppierung == "Alter") {
+    plot_data_mittelwert$Alter <- factor(
+      plot_data_mittelwert$Alter,
+      levels = c("16-29", "30-39", "40-49", "50-59", ">= 60")
+    )
+  } else if (input$variable_mittelwert_gruppierung == "Bildungsgrad") {
+    plot_data_mittelwert$Bildungsgrad <- factor(
+      plot_data_mittelwert$Bildungsgrad,
+      levels = c("gering", "mittel", "hoch")
+    )
+  }
+  
+  # Calculate date breaks
+  first_date_displayed <- min(plot_data_mittelwert$Datum)
+  last_date_displayed <- max(plot_data_mittelwert$Datum)
+  date_breaks <- calculate_date_breaks(first_date_displayed, last_date_displayed)
+  
+  # Create the plot
+  p <- ggplot(plot_data_mittelwert, aes(x = Datum, y = Mittelwert, 
+                                      color = factor(!!sym(input$variable_mittelwert_gruppierung)))) +
+    geom_line(size = 0.75) +  
+    geom_point(aes(text = paste0("Mittelwert: ", round(Mittelwert, 2), 
+                                 " ± ", round(half_ci, 2),
+                                 "<br>N (Subgruppe): ", N)), size = 1.5) +  
+    scale_color_manual(values = line_colors) +  
+    labs(x = "", y = "", color = input$variable_mittelwert_gruppierung) +
+    scale_x_date(breaks = date_breaks, date_labels = "%b %y", 
+                 limits = c(first_date_displayed, last_date_displayed)) +
+    scale_y_continuous(limits = range(as.numeric(y_labels)), 
+                       breaks = as.numeric(y_labels), 
+                       labels = names(y_labels)) +
+    get_common_theme()
+
+  # Conditionally add 95% confidence intervals
+  if (input$confidence_p3) {
+    p <- ggplot(plot_data_mittelwert, aes(x = Datum, y = Mittelwert, 
+                                      color = factor(!!sym(input$variable_mittelwert_gruppierung)))) +
+      geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), 
+            width = 0.03 * as.numeric(difftime(last_date_displayed, first_date_displayed, units = "days"))) + 
+      geom_point(aes(text = paste0("Mittelwert: ", round(Mittelwert, 2), 
+                                   " ± ", round(half_ci, 2),
+                                   "<br>N (Subgruppe): ", N)), size = 1.5) + 
+      geom_line(size = 0.75) + 
+      scale_color_manual(values = line_colors) +  
+      labs(x = "", y = "", color = input$variable_mittelwert_gruppierung) +
+      scale_x_date(breaks = date_breaks, date_labels = "%b %y", 
+                   limits = c(first_date_displayed, last_date_displayed)) +
+      scale_y_continuous(limits = range(as.numeric(y_labels)), 
+                         breaks = as.numeric(y_labels), 
+                         labels = names(y_labels)) +
+      get_common_theme()
+  }
+
+  # Customize Plotly layout and margins
+  g <- ggplotly(p, tooltip = c("x", "text"))
+  
+  # Define y-axis limits
+  y_min <- min(as.numeric(y_labels))
+  y_max <- max(as.numeric(y_labels))
+  
+  # Add election annotations
+  g <- add_election_annotations(g, y_min, y_max, "p3", first_date_displayed, last_date_displayed)
+
+  g <- g %>%
+  layout(
+    legend = list(orientation = "h", x = -0.1, y = -0.1),
+    images = list(list(
+      source = base64enc::dataURI(file = path_logo),
+      xref = "paper", yref = "paper",
+      x = 0.95, y = 0.955, sizex = 0.1, sizey = 0.1,
+      xanchor = "right", yanchor = "bottom"
+    )),
+    margin = m,
+    annotations = list(
+      # Existing annotations
+        list(
+          x = 1, y = -0.07, text = paste("N ~", N_sum, "per Subgruppe pro Welle"),
+          showarrow = FALSE, xref = 'paper', yref = 'paper',
+          xanchor = 'right', yanchor = 'top',
+          font = list(size = 12, color = "#707070")
+        ),
+        list(
+          x = 1, y = -0.1, text = "Daten: AUTNES",
+          showarrow = FALSE, xref = 'paper', yref = 'paper',
+          xanchor = 'right', yanchor = 'top',
+          font = list(size = 12, color = "#707070")
+        )
+      )
+  ) %>%
+  config(
+      displayModeBar = TRUE,
+      modeBarButtons = list(
+        list("toImage")
+      ),
+      displaylogo = FALSE,
+      toImageButtonOptions = list(
+        format = "png", width = 1500, height = 800, scale = 4
+      )
+    ) %>%
+    htmlwidgets::onRender("
+      function(el, x) {
+        // Track whether we are in a 'highlight' or 'reset' state
+        let highlightMode = false;
+
+        el.on('plotly_legenddoubleclick', function(event) {
+          if (!highlightMode) {
+            // Gray out all traces except the selected one
+            Plotly.restyle(el, 'opacity', 0.2);
+            Plotly.restyle(el, 'opacity', 1, [event.curveNumber]);
+            highlightMode = true; // Enter highlight mode
+          } else {
+            // Reset all traces to full opacity
+            Plotly.restyle(el, 'opacity', 1);
+            highlightMode = false; // Exit highlight mode
+          }
+          return false;  // prevent default double-click behavior
+        });
+
+        el.on('plotly_legendclick', function(event) {
+          if (highlightMode) {
+            // Reset all traces to full opacity on a single click if in highlight mode
+            Plotly.restyle(el, 'opacity', 1);
+            highlightMode = false; // Exit highlight mode
+            return false; // prevent default single-click behavior
+          }
+        });
+      }
+    ")
+})
+
+# Plotly output
+plotlyOutput("plot_mittelwert_grouped")
+```
+
+
+Row {.tabset}
+-----------------------------------------------------------------------
+
+### Über die Daten
+
+```{r}
+div(class = "description-area",
+  HTML(about_data_html)
+)
+```
+
+### Frageformulierung
+
+```{r}
+div(class = "question-area",
+  uiOutput("frageformulierung_text_p3")
+)
+```
+
+
+Wählerwanderungen {data-icon="fa-exchange"}
+=======================================================
+
+Row
+-----------------------------------------------------------------------
+
+### Wählerbewegungen zwischen den Nationalratswahlen von 2013 bis 2024 basierend auf Umfragedaten {data-height=1250}
+
+```{r}
+output$sankeyPlot <- renderSankeyNetwork({
+  
+  dat_sankey_links$LinkGroup <- dat_sankey_nodes$NodeGroup[dat_sankey_links$source_id + 1]
+  
+  sankey <- sankeyNetwork(
+    Links = dat_sankey_links,
+    Nodes = dat_sankey_nodes,
+    Source = "source_id",
+    Target = "target_id",
+    Value = "percent",
+    NodeID = "node",
+    LinkGroup   = "LinkGroup",
+    units = "%",
+    fontSize = 14,
+    nodeWidth = 40,
+    nodePadding = 20,  
+    NodeGroup = "NodeGroup",
+    colourScale = JS(sprintf("d3.scaleOrdinal().domain(%s).range(%s)",
+                               jsonlite::toJSON(names(sankey_colors)),
+                               jsonlite::toJSON(unname(sankey_colors))))
+  )
+  
+  # Use onRender to inject custom JavaScript for tooltip formatting
+  sankey <- htmlwidgets::onRender(
+    sankey,
+    "
+    function(el) {
+      function customizeSankey() {
+        const links = d3.select(el).selectAll('.link');
+        const nodes = d3.select(el).selectAll('.node');
+  
+        if (links.empty() || nodes.empty()) return;
+  
+        // Link behavior
+        links
+          .style('stroke-opacity', 0.3)
+          .style('stroke', function(d) { return d.source.color; })
+          .style('transition', 'stroke-opacity 0.3s')
+          .on('mouseover', function(d) {
+            d3.select(this).style('stroke-opacity', 0.8);
+          })
+          .on('mouseout', function(d) {
+            d3.select(this).style('stroke-opacity', 0.3);
+          });
+          
+        // Handle node hover behavior
+        nodes
+          .on('mouseout', function(event, d) {
+            links.style('stroke-opacity', 0.3);
+          });
+
+  
+        // Format tooltips for links
+        links.select('title')
+          .text(function(d) {
+            var percentage = d.value.toFixed(1) + ' %';
+            return d.source.name + ' → ' + d.target.name + ': ' + percentage;
+          });
+  
+        // Format tooltips for nodes
+        nodes.select('title')
+          .text(function(d) {
+            var parts = d.name.split('-');
+            return parts[0] + '-' + parts[1] + ': ' + d.value.toFixed(1) + ' %';
+          });
+      }
+  
+      // Watch for tab visibility using MutationObserver
+      const observer = new MutationObserver(function() {
+        if (el.offsetParent !== null) {
+          customizeSankey();
+          observer.disconnect();
+        }
+      });
+  
+      observer.observe(el.closest('.section'), { attributes: true, childList: true, subtree: true });
+  
+      // Also call once in case it's already visible
+      setTimeout(() => {
+        if (el.offsetParent !== null) customizeSankey();
+      }, 100);
+    }
+    "
+  )
+})
+
+# Sankey output
+sankeyNetworkOutput("sankeyPlot")
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Über die Daten
+
+```{r}
+div(class = "description-area",
+  HTML(about_data_html)
+)
+```
+
+
+```{css, echo=FALSE}
+/* Column titles */
+.chart-title {
+  font-size: 13pt;
+}
+
+/* column boxes */
+.chart-stage {
+  font-size: 11pt;
+}
+
+/* sidebar */
+.sidebar-content {
+  padding: 15px;
+}
+
+.btn-primary {
+  background-color: #0056b3;
+  border: none;
+  border-radius: 5px;
+  padding: 10px;
+  transition: background-color 0.3s ease;
+}
+
+.btn-primary:hover {
+  background-color: #003f7f;
+}
+
+.sidebar-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.sidebar-main {
+  padding-bottom: 4em;
+}
+
+.sidebar-footer {
+  position: fixed;
+  width: 325px;
+  font-size: 1.6ex;
+  bottom: 0;
+  left: 5px;
+  background-color: #f8f8f8;
+  padding: 0.5em;
+  z-index: 9999;
+}
+
+.description-area {
+  padding: 0px 5px 5px 5px;
+}
+
+.question-area {
+  max-height: 213px;
+  margin: -8px -8px 0px -2px;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.selectize-input, .selectize-dropdown {
+  line-height: 1.5;
+}
+
+.selectize-dropdown-content {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.selectize-dropdown .option {
+  padding: 10px;
+}
+
+.selectize-input {
+  border-radius: 5px;
+  border: 1px solid #ccc;
+}
+
+.selectize-dropdown {
+  border-radius: 5px;
+  border: 1px solid #ccc;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+/* hide all dashboard chrome on phones, show only the warning */
+@media only screen and (max-width: 768px),
+       only screen and (max-height: 600px) {
+  /* Bootstrap navbar */
+  .navbar,
+  /* your flexdashboard sidebar */
+  .sidebar-content,
+  /* every flexdashboard section/row/tab */
+  .section, .row, .tabset, .tab-content {
+    display: none !important;
+  }
+
+  /* show the warning */
+  .mobile-warning {
+    display: flex !important;
+    position: fixed !important;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    align-items: center; justify-content: center;
+    background: #fff;
+    padding: 1em;
+    text-align: center;
+    font-size: 1.1em;
+    z-index: 9999;
+  }
+}
+
+/* hide the warning on desktop */
+@media only screen and (min-width: 769px),
+       only screen and (min-height: 601px) {
+  .mobile-warning { display: none !important; }
+}
+```
