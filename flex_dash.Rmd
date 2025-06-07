@@ -32,7 +32,7 @@ library(readxl)
 # -----------------------------------------------------------------------------
 # AUTNES logo file
 path_logo <- "data/AUTNES-Logo(darkred).png"
-version <- "v1.0"
+version <- "v1.1"
 
 # rds files
 path_percentage <- "data/dat_percentage.rds"
@@ -86,7 +86,8 @@ party_colors <- c(
   "GRUENE" = rgb(146, 208, 80, maxColorValue = 255),
   "NEOS" = rgb(232, 65, 136, maxColorValue = 255),
   "andere Partei" = rgb(169, 169, 169, maxColorValue = 255),
-  "keine Partei" = rgb(215, 215, 215, maxColorValue = 255)
+  "keine Partei" = rgb(215, 215, 215, maxColorValue = 255),
+  "SELBSTEINSTUFUNG" = rgb(169, 169, 169, maxColorValue = 255) # for "LINKS-RECHTS SELBSTEINSTUFUNG" in MITTELWERTE
 )
 
 # Define colors for sankey diagram
@@ -135,6 +136,7 @@ category_regex <- list(
   "Meinung"                       = "^MEINUNG",
   "Wirtschaftliche Lage"          = "^WIRTSCHAFTSLAGE OESTERREICH|EIGENE WIRTSCHAFTLICHE LAGE",
   "Sympathie"                     = "^SYMPATHIE",
+  "Kompetenteste Partei"          = "^KOMPETENTESTE PARTEI",
   "Parteiidentifikation"          = "^STAERKE PARTEIIDENTIFIKATION|PARTEIIDENTIFIKATION",
   "Links-Rechts Einstufung"       = "^LINKS-RECHTS",
   "Einschaetzung der polit. Lage" = "^EINSCHAETZUNG",
@@ -381,7 +383,7 @@ category_cfg <- list(
   ),
   
   # 8 ─ PARTEIIDENTIFIKATION -----------------------------------------------
-  "^PARTEIIDENTIFIKATION" = list(
+  "^PARTEIIDENTIFIKATION VORHANDEN|PARTEIIDENTIFIKATION TENDENZ" = list(
     y_levels  = c("Nein", "Ja"),
     y_levels_numeric = c("Nein" = 0, "Ja" = 1),
     stack_dir =  1,
@@ -1031,13 +1033,17 @@ output$plot_mittelwert <- renderPlotly({
                        labels = names(y_labels)) +
     get_common_theme()
   
-  # add coloring (conditionally for parties)
+  # Add coloring (conditionally for parties)
   if (all(grepl("^PTV", input$variable_mittelwert))) {
     party_keys <- trimws(gsub("^PTV:\\s*", "", input$variable_mittelwert))
     color_mapping <- setNames(party_colors[party_keys], input$variable_mittelwert)
     p <- p + scale_color_manual(values = color_mapping)
+  } else if (all(grepl("^LINKS-RECHTS", input$variable_mittelwert))) {
+      party_keys <- trimws(gsub("^LINKS-RECHTS\\s*(EINSTUFUNG:?\\s*)?", "", input$variable_mittelwert))
+      color_mapping <- setNames(party_colors[party_keys], input$variable_mittelwert)
+      p <- p + scale_color_manual(values = color_mapping)
   } else {
-    # Fallback default for non-PTV variables
+    # Fallback default for non-PTV/LR variables
     p <- p + scale_color_manual(values = line_colors)
   }
   
