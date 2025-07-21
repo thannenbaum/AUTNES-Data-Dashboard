@@ -1,0 +1,17 @@
+cff-version: 1.0
+message: "If you use or refer to this dashboard code, please cite it as
+  indicated below."
+authors:
+  - family-names: von der Thannen
+    given-names: Philipp
+  - family-names: Partheymüller
+    given-names: Julia
+    orcid: "https://orcid.org/0000-0001-8302-1912"
+  - family-names: Kritzinger
+    given-names: Sylvia
+    orcid: "https://orcid.org/0000-0003-2765-8200"
+title: "AUTNES-Data-Dashboard"
+version: 1.1
+license: CC-BY-4.0
+repository-code: "https://github.com/thannenbaum/AUTNES-Data-Dashboard"
+date-released: 2025-06-11
