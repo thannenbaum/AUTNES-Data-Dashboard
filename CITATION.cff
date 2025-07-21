@@ -15,15 +15,3 @@ version: 1.1
 license: CC-BY-4.0
 repository-code: "https://github.com/thannenbaum/AUTNES-Data-Dashboard"
 date-released: 2025-06-11
-preferred-citation:
-  type: article
-  authors:
-    - family-names: von der Thannen
-      given-names: Philipp
-    - family-names: Partheymüller
-      given-names: Julia
-    - family-names: Kritzinger
-      given-names: Sylvia
-  title: "AUTNES Online Panel Study: Data Dashboard"
-  year: 2025
-  url: "https://github.com/thannenbaum/AUTNES-Data-Dashboard"
